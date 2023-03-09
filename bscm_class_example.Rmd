@@ -1,0 +1,285 @@
+---
+title: "BSCM with Proposition 99 Data Set"
+author: "Morgan Bale"
+date: "2023-03-08"
+output: html_document
+---
+
+Load libraries and set your working directory to source file location (we will work within the directory where you downloaded the files from Github).
+```{r, include=FALSE}
+library(rstan)
+library(tidyverse)
+library(tidysynth)
+library(bayesplot)
+library(gtools)
+library(ggplot2)
+```
+
+Create simulated data to check recovery (you could also do this in stan by sampling the parameters from their prior distributions)
+```{r}
+N_train=N_test=40
+p = 5
+tau =.01
+beta_0=5
+mu <- c(15, 35, 10, 20, 30)
+
+X_train <- matrix(NA, nrow = N_train, ncol = p)
+  
+X_test <- matrix(NA, nrow=N_test, ncol=p)  #control unit matrix in post treatment 
+  
+for(j in 1:p) {
+  X_train[,j] <- rnorm(N_train, mean=mu[j], sd=10) #control unit matrix in pre treatment
+  X_test[, j] <- rnorm(N_test, mean=mu[j], sd=10)
+}
+
+beta <- c(-.5, 2, 0, 0, 0) 
+  
+#model 
+epsilon <- rnorm(N_train, mean=0, sd=1)
+y_train <- beta_0 + X_train%*%beta + epsilon
+
+synthetic_data <- list(N_train=N_train, N_test=N_test, p=p, y_train=as.vector(y_train), X_train=X_train, X_test=X_test, beta=beta, tau=tau, beta_0=beta_0)
+```
+
+# Smiulation1: Code from Web Appendix 
+
+Run model from web appendix with synthetic data
+```{r, include=FALSE}
+bscm_code_model <- stan_model(file="bscm_code_ex.stan")
+
+synth_draws <- sampling(bscm_code_model, data=synthetic_data, seed=2023)
+```
+
+Check results for simulation with web appendix model
+```{r}
+print(bscm_code_model)
+
+traceplot(synth_draws, pars="beta")
+traceplot(synth_draws, pars="beta_0")
+traceplot(synth_draws, pars="sigma")
+traceplot(synth_draws, pars="lambda")
+
+#mcmc_recover_hist(As.mcmc.list(synth_draws, pars="beta"), true=as.vector(t(synthetic_data$beta)))
+#mcmc_recover_hist(As.mcmc.list(synth_draws, pars="beta_0"), true=as.vector(t(synthetic_data$beta_0)))
+
+print(synth_draws, pars="beta_0")
+print(synth_draws, pars="beta")
+```
+
+Check synthetic control plot
+```{r}
+#put synthetic control data together
+y_fit <- summary(synth_draws, pars="y_fit")
+sc_pre <- tibble(y_fit[[1]][,1])
+lower <- y_fit[[1]][,4]
+upper <- y_fit[[1]][,8]
+sc_pre <- sc_pre %>% bind_cols(lower, upper)
+sc_pre <- sc_pre %>% mutate(week=rep(1:N_train))
+names(sc_pre) <- c("synthetic_control","lower", "upper", "week")
+
+#synthetic control in post period 
+y_test <- summary(synth_draws, pars="y_test")
+sc_post <- tibble(y_test[[1]][,1])
+lower <- y_test[[1]][,4]
+upper <- y_test[[1]][,8]
+sc_post <- sc_post %>% bind_cols(lower, upper)
+sc_post <- sc_post %>% mutate(week=rep((N_train+1):(N_train+N_test)))
+names(sc_post) <- c("synthetic_control", "lower", "upper", "week")
+
+sc_data <- sc_pre %>% bind_rows(sc_post)
+
+#now we need to add y 
+y_test <- y_train + 10
+y_data <- c(y_train, y_test)
+
+#combine all data for plot
+results_data <- sc_data %>% bind_cols(y_data)
+names(results_data)[5] <- "generated_Y"
+
+results_data %>% ggplot(aes(x=week)) + geom_ribbon(aes(ymin=lower, ymax=upper), fill="gray80") + geom_line(aes(y=generated_Y), color="darkred") + geom_line(aes(y=synthetic_control), color="steelblue") +
+  labs(x="Week", y="Values") + ggtitle("Synthetic Control (blue) vs Generated Y (red)") + geom_vline(xintercept=N_train)
+```
+
+# Simulation2: Code from paper 
+
+Test with model code described in paper (different parameterization than web appendix)
+```{r, include=FALSE}
+bscm_paper_model <- stan_model(file="bscm_paper_ex.stan")
+
+synth_draws2 <- sampling(bscm_paper_model, data=synthetic_data, seed=2023)
+```
+
+Check results for simulation with web appendix model (very similar results, but the web appendix parameterization has less divergent transitions)
+```{r}
+print(bscm_paper_model)
+
+traceplot(synth_draws2, pars="beta")
+traceplot(synth_draws2, pars="beta_0")
+traceplot(synth_draws2, pars="sigma")
+traceplot(synth_draws2, pars="lambda")
+
+print(synth_draws2, pars="beta_0")
+print(synth_draws2, pars="beta")
+```
+
+Check synthetic control plot
+```{r}
+#put synthetic control data together
+y_fit <- summary(synth_draws2, pars="y_fit")
+sc_pre <- tibble(y_fit[[1]][,1])
+lower <- y_fit[[1]][,4]
+upper <- y_fit[[1]][,8]
+sc_pre <- sc_pre %>% bind_cols(lower, upper)
+sc_pre <- sc_pre %>% mutate(week=rep(1:N_train))
+names(sc_pre) <- c("synthetic_control","lower", "upper", "week")
+
+#synthetic control in post period 
+y_test <- summary(synth_draws2, pars="y_test")
+sc_post <- tibble(y_test[[1]][,1])
+lower <- y_test[[1]][,4]
+upper <- y_test[[1]][,8]
+sc_post <- sc_post %>% bind_cols(lower, upper)
+sc_post <- sc_post %>% mutate(week=rep((N_train+1):(N_train+N_test)))
+names(sc_post) <- c("synthetic_control", "lower", "upper", "week")
+
+sc_data <- sc_pre %>% bind_rows(sc_post)
+
+#now we need to add y 
+y_test <- y_train + 10
+y_data <- c(y_train, y_test)
+
+#combine all data for plot
+results_data <- sc_data %>% bind_cols(y_data)
+names(results_data)[5] <- "generated_Y"
+
+results_data %>% ggplot(aes(x=week)) + geom_ribbon(aes(ymin=lower, ymax=upper), fill="gray80") + geom_line(aes(y=generated_Y), color="darkred") + geom_line(aes(y=synthetic_control), color="steelblue") +
+  labs(x="Week", y="Values") + ggtitle("Synthetic Control (blue) vs Generated Y (red)") + geom_vline(xintercept=N_train)
+```
+
+# Abadie Proposition 99 Study 
+
+Data exploration: treatment time is 1988 making the pre period 1970 to 1988 and the post period 1989 to 2000
+```{r}
+data(smoking)
+
+length(unique(smoking$state)) #CA and 38 control states
+
+unique(smoking$year) #1970 to 2000
+
+#our y variable is cigsale (annual per capita cigarette consumption)
+summary(smoking$cigsale)
+```
+
+Prep data for stan
+```{r}
+control_smoking <- smoking %>% filter(state!="California")
+#make consistent order with states
+control_smoking <-control_smoking %>% arrange(year,state)
+
+treat_smoking <- smoking %>% filter(state=="California")
+N_train = 19
+N_test = 12
+p = length(unique(control_smoking$state))
+
+#(N_train, p)
+X_train <- matrix(NA, nrow=N_train, ncol=p)
+
+pre_period <- c(1970:1988)
+i=1
+for(n in pre_period) {
+  X_train[i,] <- control_smoking %>% filter(year==n) %>% pull(cigsale)
+  i=i+1
+}
+
+#(N_test, p)
+X_test <- matrix(NA, nrow=N_test, ncol=p)
+
+post_period <- c(1989:2000)
+i=1
+for(n in post_period) {
+  X_test[i,] <- control_smoking %>% filter(year==n) %>% pull(cigsale)
+  i=i+1
+}
+
+#length N_train
+y_train <- treat_smoking %>% filter(year %in% c(1970:1988)) %>% pull(cigsale)
+
+cig_data <- list(N_train=N_train, N_test=N_test, p=p, X_train=X_train, X_test=X_test, y_train=y_train)
+```
+
+Data exploration: compare to Table 1 and Figure 1: the recreation of Figure 1 shows why we don't have an appropriate control to use DID or another method. 
+```{r}
+rest_of_us <- control_smoking %>% group_by(year) %>% dplyr::summarise(avg_cigsale=mean(cigsale))
+
+ca_cigsale <- treat_smoking %>% dplyr::select(year, cigsale) 
+names(ca_cigsale) <- c("year", "CA")
+
+rest_of_us %>% left_join(ca_cigsale, by="year") %>% ggplot(aes(x=year)) + geom_line(aes(y=avg_cigsale), color="steelblue") + geom_line(aes(y=CA), color="darkred") + labs(x="Year", y="Cigarette Sales") + ggtitle("Rest of US (blue) vs CA (red)") + geom_vline(xintercept=1988)
+
+C1988 <- treat_smoking %>% filter(year==1988) %>% dplyr::summarise(mean(cigsale))
+C1980 <- treat_smoking %>% filter(year==1980) %>% dplyr::summarise(mean(cigsale))
+C1975 <- treat_smoking %>% filter(year==1975) %>% dplyr::summarise(mean(cigsale))
+
+us1988 <- control_smoking %>% filter(year==1988) %>% dplyr::summarise(mean(cigsale))
+us1980 <- control_smoking %>% filter(year==1980) %>% dplyr::summarise(mean(cigsale))
+us1975 <- control_smoking %>% filter(year==1975) %>% dplyr::summarise(mean(cigsale))
+
+table1 <- data.frame(vars=c("Sales per capita 1988", "Sales per capita 1980", "Sales per capita 1975"), California=c(as.character(C1988), as.character(C1980), as.character(C1975)), Avg_Controls=c(as.character(us1988), as.character(us1980), as.character(us1975)))
+
+table1
+```
+
+Run web appendix parameterization with cigarette data: since we did not see a large difference between the paper and code parameterization, we will use the web appendix code since it had less divergent transitions (likely the reasons the authors used it). 
+```{r, include=FALSE}
+#note the model is already compiled
+cig_draws <- sampling(bscm_code_model, data=cig_data, seed=2023)
+```
+
+Check traceplots: the traceplots suggest we might need more iterations for better convergence (this can be adjusted in the sampling function). We can also call individual beta and lambda traceplots to see them more closely. 
+```{r}
+traceplot(cig_draws, pars="beta")
+traceplot(cig_draws, pars="beta_0")
+traceplot(cig_draws, pars="sigma")
+traceplot(cig_draws, pars="lambda")
+```
+
+Check synthetic control plot (note the synthetic control is created in generated quantities in the stan model) --> the Bayesian version allows us to do the posterior shading to better understand our uncertainty. This plot is recreating Figure 2 in the Abadie et al paper. 
+```{r}
+#put synthetic control data together
+y_fit <- summary(cig_draws, pars="y_fit")
+sc_pre <- tibble(y_fit[[1]][,1])
+lower <- y_fit[[1]][,4]
+upper <- y_fit[[1]][,8]
+sc_pre <- sc_pre %>% bind_cols(lower, upper)
+sc_pre <- sc_pre %>% mutate(year=rep(1970:1988))
+names(sc_pre) <- c("synthetic_control","lower", "upper", "year")
+
+#synthetic control in post period 
+y_test <- summary(cig_draws, pars="y_test")
+sc_post <- tibble(y_test[[1]][,1])
+lower <- y_test[[1]][,4]
+upper <- y_test[[1]][,8]
+sc_post <- sc_post %>% bind_cols(lower, upper)
+sc_post <- sc_post %>% mutate(year=rep(1989:2000))
+names(sc_post) <- c("synthetic_control", "lower", "upper", "year")
+
+sc_data <- sc_pre %>% bind_rows(sc_post)
+
+#now we need to add y 
+y_data <- treat_smoking %>% dplyr::select(year, cigsale)
+names(y_data) <- c("year", "CA")
+
+#combine all data for plot
+results_data <- sc_data %>% left_join(y_data, by="year")
+
+results_data %>% ggplot(aes(x=year)) + geom_ribbon(aes(ymin=lower, ymax=upper), fill="gray80") + geom_line(aes(y=CA), color="darkred") + geom_line(aes(y=synthetic_control), color="steelblue") +
+  labs(x="Year", y="Cigarette Sales") + ggtitle("Synthetic Control (blue) vs CA (red)") + geom_vline(xintercept=1988)
+```
+
+In Abadie et al they estimate that the mean decrease in packs per capita was 20 and ours is about 15. We can also recreate Figure 3 from their paper. 
+```{r}
+results_data %>% mutate(diff=synthetic_control-CA) %>% filter(year %in% c(1989:2000)) %>% summarise(mean(diff))
+
+results_data %>% mutate(diff=CA-synthetic_control) %>% ggplot(aes(x=year, y=diff)) + geom_line() + labs(x="Year", y="Difference between SC and CA") + geom_hline(yintercept=0) + geom_vline(xintercept=1988)
+```
+
